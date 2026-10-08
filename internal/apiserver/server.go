@@ -2,9 +2,12 @@
 package apiserver
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -45,7 +48,7 @@ func New(addr string, handler http.Handler, logger *slog.Logger) (*Server, error
 	})
 
 	mux := http.NewServeMux()
-	mux.Handle("/", recoveryMiddleware(logger)(requestLoggingMiddleware(logger)(validate(handler))))
+	mux.Handle("/", recoveryMiddleware(logger)(requestLoggingMiddleware(logger)(specWrapMiddleware(validate(handler)))))
 	return &Server{
 		logger: logger,
 		srv: &http.Server{
@@ -128,6 +131,32 @@ func (s *Server) waitForReady(ctx context.Context, addr string) error {
 		case <-ticker.C:
 		}
 	}
+}
+
+// specWrapMiddleware wraps bare create bodies in {"spec": ...} so the
+// OpenAPI validator accepts them (agent external path omits the envelope).
+func specWrapMiddleware(next http.Handler) http.Handler {
+	const createPath = "/api/v1alpha1/three-tier-apps"
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == createPath && r.Body != nil {
+			raw, err := io.ReadAll(r.Body)
+			_ = r.Body.Close()
+			if err == nil && len(raw) > 0 {
+				var obj map[string]json.RawMessage
+				if json.Unmarshal(raw, &obj) == nil {
+					if _, hasSpec := obj["spec"]; !hasSpec {
+						wrapped, _ := json.Marshal(map[string]json.RawMessage{
+							"spec": json.RawMessage(raw),
+						})
+						raw = wrapped
+					}
+				}
+			}
+			r.Body = io.NopCloser(bytes.NewReader(raw))
+			r.ContentLength = int64(len(raw))
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func recoveryMiddleware(logger *slog.Logger) func(http.Handler) http.Handler {
