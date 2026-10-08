@@ -22,32 +22,7 @@ func TestSpecWrapMiddleware(t *testing.T) {
 	})
 	handler := specWrapMiddleware(inner)
 
-	t.Run("wraps bare spec on create", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodPost, "/api/v1alpha1/three-tier-apps", bytes.NewBufferString(bareSpec))
-		req.Header.Set("Content-Type", "application/json")
-		w := httptest.NewRecorder()
-		handler.ServeHTTP(w, req)
-
-		var got map[string]json.RawMessage
-		if err := json.Unmarshal(receivedBody, &got); err != nil {
-			t.Fatalf("unmarshal received body: %v", err)
-		}
-		specRaw, ok := got["spec"]
-		if !ok {
-			t.Fatal("expected wrapped body to contain top-level 'spec' key")
-		}
-		var spec map[string]json.RawMessage
-		if err := json.Unmarshal(specRaw, &spec); err != nil {
-			t.Fatalf("unmarshal spec: %v", err)
-		}
-		for _, key := range []string{"database", "app", "web"} {
-			if _, ok := spec[key]; !ok {
-				t.Errorf("expected spec to contain %q", key)
-			}
-		}
-	})
-
-	t.Run("passes through already-wrapped body", func(t *testing.T) {
+	t.Run("does not double-wrap", func(t *testing.T) {
 		wrapped := `{"spec":{"database":{"engine":"postgres","version":"16"},"app":{"image":"app:v1"},"web":{"image":"nginx:alpine"}}}`
 		req := httptest.NewRequest(http.MethodPost, "/api/v1alpha1/three-tier-apps", bytes.NewBufferString(wrapped))
 		req.Header.Set("Content-Type", "application/json")
@@ -57,9 +32,6 @@ func TestSpecWrapMiddleware(t *testing.T) {
 		var got map[string]json.RawMessage
 		if err := json.Unmarshal(receivedBody, &got); err != nil {
 			t.Fatalf("unmarshal received body: %v", err)
-		}
-		if _, ok := got["spec"]; !ok {
-			t.Fatal("expected body to still have 'spec' key")
 		}
 		var inner map[string]json.RawMessage
 		if err := json.Unmarshal(got["spec"], &inner); err != nil {
@@ -71,8 +43,7 @@ func TestSpecWrapMiddleware(t *testing.T) {
 	})
 
 	t.Run("ignores GET requests", func(t *testing.T) {
-		bare := `{"database":{"engine":"postgres","version":"16"}}`
-		req := httptest.NewRequest(http.MethodGet, "/api/v1alpha1/three-tier-apps", bytes.NewBufferString(bare))
+		req := httptest.NewRequest(http.MethodGet, "/api/v1alpha1/three-tier-apps", bytes.NewBufferString(bareSpec))
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, req)
 
@@ -86,8 +57,7 @@ func TestSpecWrapMiddleware(t *testing.T) {
 	})
 
 	t.Run("ignores other paths", func(t *testing.T) {
-		bare := `{"database":{"engine":"postgres","version":"16"}}`
-		req := httptest.NewRequest(http.MethodPost, "/api/v1alpha1/other", bytes.NewBufferString(bare))
+		req := httptest.NewRequest(http.MethodPost, "/api/v1alpha1/other", bytes.NewBufferString(bareSpec))
 		w := httptest.NewRecorder()
 		handler.ServeHTTP(w, req)
 
@@ -101,7 +71,7 @@ func TestSpecWrapMiddleware(t *testing.T) {
 	})
 }
 
-func TestBareSpecFailsWithoutMiddleware(t *testing.T) {
+func TestBareSpecOpenAPIValidation(t *testing.T) {
 	swagger, err := v1alpha1.GetSwagger()
 	if err != nil {
 		t.Fatalf("load swagger: %v", err)
